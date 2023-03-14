@@ -46,8 +46,8 @@ function Connect-vRLI-Cloud
     .NOTES
     ==============================================================================================================================================
     Created by:    Munishpal Makhija                                                                                                              
-    Version:       1.0
-    Date:          10/12/2022
+    Version:       1.1
+    Date:          03/13/2023
     Organization:  VMware
     Blog:          https://munishpalmakhija.com
     ==============================================================================================================================================
@@ -75,8 +75,9 @@ function Connect-vRLI-Cloud
   }
   elseif (($PSVersionTable.PSVersion.Major -eq 7)) {
      $API = ConvertFrom-SecureString -SecureString $APIToken -AsPlainText
-  }  
-  $url = "https://console.cloud.vmware.com/csp/gateway/am/api/auth/api-tokens/authorize?source=PowervRLICloud"
+  }
+  $csp_host = "console.cloud.vmware.com"  
+  $url = "https://$csp_host/csp/gateway/am/api/auth/api-tokens/authorize?source=PowervRLICloud"
   $headers = @{"Accept"="application/json";
  "Content-Type"="application/x-www-form-urlencoded";
 }
@@ -86,18 +87,82 @@ $response = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $pa
   if($response)
   {
     #$response = ($response | ConvertFrom-Json)
+    function Get-JWTDetails {
+        [cmdletbinding()]
+        param(
+            [Parameter(Mandatory = $true, ValueFromPipeline = $true, Position = 0)]
+            [string]$token
+        )
+        if (!$token.Contains(".") -or !$token.StartsWith("eyJ")) { Write-Error "Invalid token" -ErrorAction Stop }
+
+        # Token
+        foreach ($i in 0..1) {
+            $data = $token.Split('.')[$i].Replace('-', '+').Replace('_', '/')
+            switch ($data.Length % 4) {
+                0 { break }
+                2 { $data += '==' }
+                3 { $data += '=' }
+            }
+        }
+        $decodedToken = [System.Text.Encoding]::UTF8.GetString([convert]::FromBase64String($data)) | ConvertFrom-Json 
+        Write-Verbose "JWT Token:"
+        Write-Verbose $decodedToken
+        # Signature
+        foreach ($i in 0..2) {
+            $sig = $token.Split('.')[$i].Replace('-', '+').Replace('_', '/')
+            switch ($sig.Length % 4) {
+                0 { break }
+                2 { $sig += '==' }
+                3 { $sig += '=' }
+            }
+        }
+        Write-Verbose "JWT Signature:"
+        Write-Verbose $sig
+        $decodedToken | Add-Member -Type NoteProperty -Name "sig" -Value $sig
+
+        # Convert Expiry time to PowerShell DateTime
+        $orig = (Get-Date -Year 1970 -Month 1 -Day 1 -hour 0 -Minute 0 -Second 0 -Millisecond 0)
+        $timeZone = Get-TimeZone
+        $utcTime = $orig.AddSeconds($decodedToken.exp)
+        $offset = $timeZone.GetUtcOffset($(Get-Date)).TotalMinutes #Daylight saving needs to be calculated
+        $localTime = $utcTime.AddMinutes($offset)     # Return local time,              
+        $decodedToken | Add-Member -Type NoteProperty -Name "expiryDateTime" -Value $localTime
+                
+        # Time to Expiry
+        $timeToExpiry = ($localTime - (get-date))
+        $decodedToken | Add-Member -Type NoteProperty -Name "timeToExpiry" -Value $timeToExpiry
+
+        return $decodedToken
+    }
+  $token = $response.access_token
+  $results = Get-JWTDetails($token)
+
+    #$sd = ($results.perms | grep -i "log-intelligence").Split("/")[1]
+    $sd = (($results.perms | Select-String -Pattern "log-intelligence").Line).Split("/")[1]
+    #$si = (($results.perms | grep -i "log-intelligence").Split(":")[1]).Split("/")[0]
+    $si = ((($results.perms | Select-String -Pattern "log-intelligence").Line).Split(":")[1]).Split("/")[0]
+    
+    $org_id = $results.context_name
+
     if ($Region -eq "us")
     {
       $apiurl = "api.mgmt.cloud.vmware.com"
+      $dataurl = "data.mgmt.cloud.vmware.com"
     }
     else
     {
         $apiurl = $Region + ".api.mgmt.cloud.vmware.com"
+        $dataurl = $Region + "data.mgmt.cloud.vmware.com"
     }    
     # Setup a custom object to contain the parameters of the connection, including the URL to the CSP API & Access token
     $connection = [pscustomObject] @{
       "Server" = $apiurl      
       "CSPToken" = $response.access_token
+      "DataURL" = $dataurl
+      "OrgId" = $org_id
+      "ServiceId" = $sd
+      "ServiceInstance" = $si
+      "CSPHost" = $csp_host
     }
 
     # Remember this as the default connection
@@ -1195,8 +1260,8 @@ function Get-UsageReport
     .NOTES
     ==============================================================================================================================================
     Created by:    Munishpal Makhija                                                                                                              
-    Version:       1.0
-    Date:          10/12/2022
+    Version:       1.1
+    Date:          03/13/2023
     Organization:  VMware
     Blog:          https://munishpalmakhija.com
     ==============================================================================================================================================
@@ -1206,7 +1271,7 @@ function Get-UsageReport
     .DESCRIPTION
         This cmdlet retrieves vRLIC Usage Report in a particular Org 
     .EXAMPLE
-        Get-UsageReport -UsageType "usageType=DATA_INGESTED_NON_BILLABLE_V2&usageType=DATA_INGESTED_BILLABLE_V2"   
+        Get-UsageReport -UsageType DATA_INGESTED_BILLABLE_V2 -Duration 1440  
 #>
     param (
     [Parameter (Mandatory=$False)]
@@ -1216,7 +1281,11 @@ function Get-UsageReport
       [Parameter (Mandatory=$true)]
         # Usage Type
         [ValidateNotNullOrEmpty()]
-        [string]$UsageType              
+        [string]$UsageType,
+      [Parameter (Mandatory=$false)]
+        # Duration in Mins
+        [ValidateNotNullOrEmpty()]
+        [string]$Duration=8                             
   )
   If (-Not $global:defaultvRLICConnection) 
     { 
@@ -1228,14 +1297,18 @@ function Get-UsageReport
             $vrlic_uri = "/vrlic/api/v1/billing/usage-reports"
             $url = $Connection.Server
             $usage_type=$UsageType
-            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "&"+ $usage_type+ "?source=PowervRLICloud"
+            $end=get-date
+            $start=$end.AddMinutes(-$Duration)
+            $start_ms=([DateTimeOffset]$start).ToUnixTimeMilliseconds()
+            $end_ms=([DateTimeOffset]$end).ToUnixTimeMilliseconds()            
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "?usageType="+ $usage_type+ "&start="+ $start_ms+ "&end="+ $end_ms
             $cspauthtoken= $Connection.CSPToken         
             $vrlic_headers = @{"Accept"="application/json";
             "Content-Type"="application/json";
             "Authorization"="Bearer $cspauthtoken"; 
             }
             $response = Invoke-RestMethod -Uri $vrlic_url -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
-            $response      
+            $response.usage.$usage_type  
           } catch {
             if($_.Exception.Response.StatusCode -eq "Unauthorized") {
                 Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
@@ -1243,6 +1316,558 @@ function Get-UsageReport
             } 
             else {
                 Write-Error "Error in retrieving vRLIC Usage Report"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Post-LogsTovRLICloud #########################
+
+function Post-LogsTovRLICloud
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Ingest log message in a particular Org 
+    .DESCRIPTION
+        This cmdlet ingests log message in a particular Org 
+    .EXAMPLE
+        Post-LogsTovRLICloud -AccessKeyName $AccessKeyName -LogMessage $LogMessage 
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        # Access Key Name
+        [ValidateNotNullOrEmpty()]
+        [string]$AccessKeyName,
+        [Parameter (Mandatory=$true)]
+        # Log Message
+        [ValidateNotNullOrEmpty()]
+        [string]$LogMessage                      
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/le-mans/v1/streams/ingestion-pipeline-stream"
+            $url = $Connection.DataURL
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "?source=PowervRLICloud"
+            $AccessKey = Get-AccessKey -KeyName $AccessKeyName
+            $cspauthtoken= $AccessKey.key
+            $hostname = hostname
+            $d=get-date
+            $log_timestamp=([DateTimeOffset]$d).ToUnixTimeMilliseconds()         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $vrlic_body = "[`n	{`n		`"text`": `"$LogMessage`"`n		`"source_hostname`": `"$hostname`"`n   `"log_source`": `"powervrlicloud`"`n        `"log_timestamp`": `"$log_timestamp`"`n	}`n]	"              
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error senging logs to vRLI Cloud"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Post-LogsToCloudProxy #########################
+
+function Post-LogsToCloudProxy
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Ingest log message in a particular Org via Cloud Proxy 
+    .DESCRIPTION
+        This cmdlet ingests log message in a particular Org via Cloud Proxy 
+    .EXAMPLE
+        Post-LogsToCloudProxy -CloudProxyIP $CloudProxyIP -LogMessage $LogMessage  
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        # Cloud Proxy IP
+        [ValidateNotNullOrEmpty()]
+        [string]$CloudProxyIP,
+        [Parameter (Mandatory=$true)]
+        # Log Message
+        [ValidateNotNullOrEmpty()]
+        [string]$LogMessage                             
+  )
+    $vrlic_uri = ":9000/log-forwarder/ingest"
+    $vrlic_url = "http://"+ $CloudProxyIP+ $vrlic_uri+ "?source=PowervRLICloud"
+    $hostname = hostname
+    $d=get-date
+    $log_timestamp=([DateTimeOffset]$d).ToUnixTimeMilliseconds()   
+
+    $vrlic_headers = @{"Accept"="*/*";
+    "Content-Type"="application/json"; 
+    }
+    $vrlic_body = "{`n   `"source_hostname`":   `"$hostname`",`n   `"log_source`": `"powervrlicloud`",`n   `"text`": `"$LogMessage`",`n   `"log_timestamp`": `"$log_timestamp`"`n}"
+            
+    $response = Invoke-RestMethod -Uri $vrlic_url -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+    $response.result    
+}
+######################### Search-UserInOrg #########################
+
+function Search-UserInOrg
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Search User in a particular Org 
+    .DESCRIPTION
+        This cmdlet Search User in a particular Org 
+    .EXAMPLE
+        Search-UserInOrg -UserEmail $UserEmail  
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$False)]
+        # User Email
+        [ValidateNotNullOrEmpty()]
+        [string]$UserEmail                         
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            
+            $orgId = $Connection.OrgId
+            $csp_host = $Connection.CSPHost
+            $fullurl = "https://$csp_host/csp/gateway/am/api/v2/users/search"
+
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $vrlic_body = "{`n    `"searchTerm`": `"$UserEmail`"`n}"
+            $response = Invoke-RestMethod -Uri $fullurl -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck
+            $response.results
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error Searching for the user"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Get-UserServiceRoles #########################
+
+function Get-UserServiceRoles
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Returns User Service Roles in a particular Org 
+    .DESCRIPTION
+        This cmdlet retrieves User Service Roles in a particular Org 
+    .EXAMPLE
+        Get-UserServiceRoles -UserEmail $UserEmail
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+        [Parameter (Mandatory=$true)]
+        # User Email
+        [ValidateNotNullOrEmpty()]
+        [string]$UserEmail           
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $orgId = $Connection.OrgId
+            $u = Search-UserInOrg -UserEmail $UserEmail
+            $userid = $u.userId
+            $csp_host = $Connection.CSPHost            
+            $fullurl = "https://$csp_host/csp/gateway/am/api/v2/users/$userid/orgs/$orgId/service-roles?source=PowervRLICloud"
+
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $fullurl -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response.serviceRoles.serviceRoles     
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in retrieving User Service Roles"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Invite-NewUserTovRLICloudService #########################
+
+function Invite-NewUserTovRLICloudService
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Add/Invite User to vRLI Cloud Service in a particular Org 
+    .DESCRIPTION
+        This cmdlet Adds/Invites User to vRLI Cloud Service  in a particular Org 
+    .EXAMPLE
+        Invite-NewUserTovRLICloudService -UserEmail $UserEmail  
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$False)]
+        # Org Role Name
+        [ValidateNotNullOrEmpty()]
+        [string]$OrgRoleName = "org_member",
+        [Parameter (Mandatory=$true)]
+        # User Email
+        [ValidateNotNullOrEmpty()]
+        [string]$UserEmail,
+      [Parameter (Mandatory=$False)]
+        # vRLI Cloud Service Role Name
+        [ValidateNotNullOrEmpty()]
+        [string]$ServiceRoleName = "log-intelligence:user"                          
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            
+            $orgId = $Connection.OrgId
+            $csp_host = $Connection.CSPHost
+            $fullurl = "https://$csp_host/csp/gateway/am/api/orgs/$orgId/invitations"
+
+            $sd = $Connection.ServiceId
+            $id = $Connection.ServiceInstance
+            $instanceid = "instance:"+ $id
+
+            $serviceDefinition = "/csp/gateway/slc/api/definitions/external/"+ $sd 
+
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+
+            $vrlic_body = "{`n    `"skipNotify`": false,`n    `"usernames`": [`n        `"$UserEmail`"`n    ],`n    `"organizationRoles`": [`n        {`n            `"name`": `"$OrgRoleName`",`n            `"expiresAt`": null`n        }`n    ],`n    `"serviceRolesDtos`": [`n        {`n            `"serviceRoles`": [`n                {`n                    `"name`": `"$ServiceRoleName`",`n                    `"expiresAt`": null,`n                    `"resource`": `"$instanceid`"`n                 }`n            ],`n            `"serviceDefinitionLink`": `"$serviceDefinition`"`n        }`n    ]`n}"
+             
+            $response = Invoke-RestMethod -Uri $fullurl -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck
+
+            $response       
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error inviting New User to vRLI Cloud"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+######################### Add-UserTovRLICloudService #########################
+
+function Add-UserTovRLICloudService
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Add's User to vRLI Cloud Service in a particular Org 
+    .DESCRIPTION
+        This cmdlet Add's User to vRLI Cloud Service in a particular Org 
+    .EXAMPLE
+        Add-UserTovRLICloudService  -UserEmail $UserEmail
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+        [Parameter (Mandatory=$true)]
+        # User Email
+        [ValidateNotNullOrEmpty()]
+        [string]$UserEmail,
+      [Parameter (Mandatory=$False)]
+        # vRLI Cloud Service Role Name
+        [ValidateNotNullOrEmpty()]
+        [string]$ServiceRoleName = "log-intelligence:user"                                 
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            
+            $orgId = $Connection.OrgId
+            $sd = $Connection.ServiceId
+            $id = $Connection.ServiceInstance
+            $instanceid = "instance:"+ $id
+            $u = Search-UserInOrg -UserEmail $UserEmail
+            $userid = $u.userId
+            $csp_host = $Connection.CSPHost
+            $fullurl = "https://$csp_host/csp/gateway/am/api/v3/users/$userid/orgs/$orgId/roles"
+
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+
+            $vrlic_body = "{`n    `"serviceRoles`": [`n        {`n            `"serviceDefinitionId`": `"$sd`",`n            `"rolesToAdd`": [`n                {`n                    `"name`": `"$ServiceRoleName`",`n                    `"resource`": `"instance:$id`",`n                    `"membershipType`": `"DIRECT`"`n                }`n            ]`n        }`n    ],`n    `"notifyUsers`": false`n}"
+             
+            $response = Invoke-RestMethod -Uri $fullurl -Method Patch -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck
+
+            $response       
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error Adding User to vRLI Cloud Service"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Remove-UserFromvRLICloudService #########################
+
+function Remove-UserFromvRLICloudService
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Remove User from vRLI Cloud Service in a particular Org 
+    .DESCRIPTION
+        This cmdlet Remove User from vRLI Cloud Service  in a particular Org 
+    .EXAMPLE
+        Remove-UserFromvRLICloudService -UserEmail $UserEmail 
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+        [Parameter (Mandatory=$true)]
+        # User Email
+        [ValidateNotNullOrEmpty()]
+        [string]$UserEmail                         
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            
+            $orgId = $Connection.OrgId
+            $sd = $Connection.ServiceId
+            $id = $Connection.ServiceInstance
+            $instanceid = "instance:"+ $id
+            $u = Search-UserInOrg -UserEmail $UserEmail
+            $userid = $u.userId
+            $roles = Get-UserServiceRoles -UserEmail $UserEmail | where{$_.name -match "log-intelligence"}
+            $rolename = $roles.name
+            $csp_host = $Connection.CSPHost 
+            $fullurl = "https://$csp_host/csp/gateway/am/api/v3/users/$userid/orgs/$orgId/roles"
+
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+
+            $vrlic_body = "{`n    `"serviceRoles`": [`n        {`n            `"serviceDefinitionId`": `"$sd`",`n            `"rolesToRemove`": [`n                {`n                    `"name`": `"$rolename`",`n                    `"resource`": `"instance:$id`",`n                    `"membershipType`": `"DIRECT`"`n                }`n            ]`n        }`n    ],`n    `"notifyUsers`": false`n}"
+
+            $response = Invoke-RestMethod -Uri $fullurl -Method Patch -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck
+
+            $response       
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error Removing User from vRLI Cloud Service"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+######################### Remove-UserFromOrg #########################
+
+function Remove-UserFromOrg
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          03/13/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Remove User from a particular Org 
+    .DESCRIPTION
+        This cmdlet Remove User from a particular Org 
+    .EXAMPLE
+        Remove-UserFromOrg -UserEmail $UserEmail  
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+        [Parameter (Mandatory=$true)]
+        # User Email
+        [ValidateNotNullOrEmpty()]
+        [string]$UserEmail                         
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            
+            $orgId = $Connection.OrgId
+            $u = Search-UserInOrg -UserEmail $UserEmail
+            $userid = $u.userId
+            $csp_host = $Connection.CSPHost
+            $fullurl = "https://$csp_host/csp/gateway/am/api/v2/orgs/$orgId/users"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+
+            $vrlic_body = "{`n  `"ids`": [`n        `"$userid`"`n    ]`n}"
+
+            $response = Invoke-RestMethod -Uri $fullurl -Method DELETE -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck
+
+            $response       
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error removing user from Org "
                 Write-Error "`n($_.Exception.Message)`n"
                 break
             }
