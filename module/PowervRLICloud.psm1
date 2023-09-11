@@ -278,7 +278,7 @@ function Remove-AlertDefinition
     .DESCRIPTION
         This cmdlet deletes vRLIC Alert Definition in a particular Org 
     .EXAMPLE
-        Remove-AlertDefinition -Name "Test"}
+        Remove-AlertDefinition -AlertName "Test"
 #>
     param (
     [Parameter (Mandatory=$False)]
@@ -1874,3 +1874,632 @@ function Remove-UserFromOrg
     }
 }}
 
+######################### Get-Tags #########################
+
+function Get-Tags
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Returns vRLIC Tags in a particular Org 
+    .DESCRIPTION
+        This cmdlet retrieves vRLIC Tags in a particular Org 
+    .EXAMPLE
+        Get-Tags | where{$_.name -match "Test"}
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$False)]
+        # Size
+        [ValidateNotNullOrEmpty()]
+        [string]$Size=20         
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/tags?size=$Size&sort=asc"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "&source=PowervRLICloud"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response.content      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in retrieving vRLIC Tags"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Create-Tag #########################
+
+function Create-Tag
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Creates a tag in a particular Org 
+    .DESCRIPTION
+        This cmdlet creates a tag in a particular Org 
+    .EXAMPLE
+        Create-Tag -Name "MMPowervRLICloudTest" 
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        #Name
+        [ValidateNotNullOrEmpty()]
+        [string]$Name                     
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/tags/"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "?source=PowervRLICloud"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $vrlic_body = "{
+                `"name`": `"$Name`"
+            }"               
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response     
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in creating vRLIC Tag"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Remove-Tag #########################
+
+function Remove-Tag
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Deletes vRLIC Tag in a particular Org 
+    .DESCRIPTION
+        This cmdlet deletes vRLIC Tag in a particular Org 
+    .EXAMPLE
+        Remove-Tag -Name "MMPowervRLICloudTest"  
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        # Name
+        [ValidateNotNullOrEmpty()]
+        [string]$Name            
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $tag=Get-Tags | where{$_.name -match "$Name"}
+            $tagId=$tag.id
+            $vrlic_uri = "/vrlic/api/v1/tags/"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ $tagId+ "?source=PowervRLICloud"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method DELETE -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            if ($response){
+                Write-Host -ForegroundColor Green "Tag removed successfully" 
+                break
+            }      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in deleting vRLIC Tag "
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Get-vSphereConfig #########################
+
+function Get-vSphereConfig
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Returns vRLIC vSphere configs in a particular Org 
+    .DESCRIPTION
+        This cmdlet retrieves vRLIC vSphere configs in a particular Org 
+    .EXAMPLE
+        Get-vSphereConfig | where{$_.hostname -match "lab.local"}
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection       
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/vsphere/configs"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "?source=PowervRLICloud"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response.content      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in retrieving vRLIC vSphere Configs"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Get-WebhookConfig #########################
+
+function Get-WebhookConfig
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Returns vRLIC Webhook Config in a particular Org 
+    .DESCRIPTION
+        This cmdlet retrieves vRLIC Webhook Config in a particular Org 
+    .EXAMPLE
+        Get-WebhookConfig | where{$_.name -match "Test"}
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection       
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/notification/webhook-configurations"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "?source=PowervRLICloud"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response.content      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in retrieving vRLIC Webhook Configs"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+######################### Get-Fields #########################
+
+function Get-Fields
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Returns vRLIC Fields in a particular Org 
+    .DESCRIPTION
+        This cmdlet retrieves vRLIC Fields in a particular Org 
+    .EXAMPLE
+        Get-Fields | where{$_.displayName -match "test"}
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$False)]
+        # QuerySource
+        [ValidateNotNullOrEmpty()]
+        [string]$FieldType="LOGS"            
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/query/fields?type=$FieldType"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response.fields      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in retrieving vRLIC Fields"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Create-QueryDefinition #########################
+
+function Create-QueryDefinition
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Creates an Query Definition in a particular Org 
+    .DESCRIPTION
+        This cmdlet an Query Definition in a particular Org 
+    .EXAMPLE
+        $payload = Get-Content ./config.json | ConvertTo-Json
+        Create-QueryDefinition -QueryPayload $payload 
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        #Query Payload
+        [ValidateNotNullOrEmpty()]
+        [string]$QueryPayload                               
+  )
+  If (-Not $global:defaultvRLICConnection)
+    {
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    }
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/query-definitions"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $vrlic_body = $QueryPayload | ConvertFrom-Json 
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response     
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in creating vRLIC Query Definition"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+
+######################### Get-QueryDefinitions #########################
+
+function Get-QueryDefinitions
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Returns vRLIC Query Definitions in a particular Org 
+    .DESCRIPTION
+        This cmdlet retrieves vRLIC Query Definitions in a particular Org 
+    .EXAMPLE
+        Get-QueryDefinitions | where{$_.name -match "MM_PowervRLI"}
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$False)]
+        # Size
+        [ValidateNotNullOrEmpty()]
+        [string]$PageSize=200,
+      [Parameter (Mandatory=$False)]
+        # QuerySource
+        [ValidateNotNullOrEmpty()]
+        [string]$QuerySource="USER_DEFINED"              
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/query-definitions"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ "?size=$PageSize&source="+ $QuerySource
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Get -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response.content 
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in retrieving vRLIC Query Definitions"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+######################### Remove-QueryDefinition #########################
+
+function Remove-QueryDefinition
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Deletes vRLIC Query Definition in a particular Org 
+    .DESCRIPTION
+        This cmdlet deletes vRLIC Query Definition in a particular Org 
+    .EXAMPLE
+        Remove-QueryDefinition -QueryName "MMPowervRLICloudTest"  
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        # Name
+        [ValidateNotNullOrEmpty()]
+        [string]$QueryName            
+  )
+  If (-Not $global:defaultvRLICConnection) 
+    { 
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    } 
+  else
+    {
+      try {
+            $query=Get-QueryDefinitions | where{$_.name -match "$QueryName"}
+            $queryId=$query.id
+            $vrlic_uri = "/vrlic/api/v1/query-definitions/"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri+ $queryId+ "?source=PowervRLICloud"
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method DELETE -Headers $vrlic_headers -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            if ($response){
+                Write-Host -ForegroundColor Green "Query Definition removed successfully" 
+                break
+            }      
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in deleting vRLIC Query Definition "
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
+######################### Create-AlertDefinition #########################
+
+function Create-AlertDefinition
+{
+
+<#
+    .NOTES
+    ==============================================================================================================================================
+    Created by:    Munishpal Makhija                                                                                                              
+    Version:       1.0
+    Date:          09/11/2023
+    Organization:  VMware
+    Blog:          https://munishpalmakhija.com
+    ==============================================================================================================================================
+
+    .SYNOPSIS
+        Creates an Alert Definition in a particular Org 
+    .DESCRIPTION
+        This cmdlet creates an Alert Definition in a particular Org 
+    .EXAMPLE
+        $alertpayload = Get-Content ./alert.json | ConvertTo-Json
+        Create-AlertDefinition  -AlertPayload $alertpayload
+#>
+    param (
+    [Parameter (Mandatory=$False)]
+      # vRLIC Connection object
+      [ValidateNotNullOrEmpty()]
+      [PSCustomObject]$Connection=$defaultvRLICConnection,
+      [Parameter (Mandatory=$true)]
+        #Alert Payload
+        [ValidateNotNullOrEmpty()]
+        [string]$AlertPayload                               
+  )
+  If (-Not $global:defaultvRLICConnection)
+    {
+      Write-error "Not Connected to vRLI Cloud, please use Connect-vRLI-Cloud"
+    }
+  else
+    {
+      try {
+            $vrlic_uri = "/vrlic/api/v1/alert"
+            $url = $Connection.Server
+            $vrlic_url = "https://"+ $url+ $vrlic_uri
+            $cspauthtoken= $Connection.CSPToken         
+            $vrlic_headers = @{"Accept"="application/json";
+            "Content-Type"="application/json";
+            "Authorization"="Bearer $cspauthtoken"; 
+            }
+            $vrlic_body = $AlertPayload | ConvertFrom-Json             
+            $response = Invoke-RestMethod -Uri $vrlic_url -Method Post -Headers $vrlic_headers -Body $vrlic_body -ErrorAction:Stop -SkipCertificateCheck:$SkipSSLCheck 
+            $response     
+          } catch {
+            if($_.Exception.Response.StatusCode -eq "Unauthorized") {
+                Write-Host -ForegroundColor Red "`nvRLI Cloud Session is no longer valid, please re-run the Connect-vRLI-Cloud cmdlet to retrieve a new token`n"
+                break
+            } 
+            else {
+                Write-Error "Error in creating vRLIC Alert Definition"
+                Write-Error "`n($_.Exception.Message)`n"
+                break
+            }
+    }
+}}
